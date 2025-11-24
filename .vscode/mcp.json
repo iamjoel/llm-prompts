@@ -1,0 +1,27 @@
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "figma-key",
+      "description": "Figma API Key",
+      "password": true
+    }
+  ],
+  "servers": {
+    // https://github.com/github/github-mcp-server/
+    "Github": {
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
+    // https://github.com/GLips/Figma-Context-MCP
+    "Figma": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "figma-developer-mcp",
+        "--figma-api-key=${input:figma-key}",
+        "--stdio"
+      ]
+    }
+  }
+}
