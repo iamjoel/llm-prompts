@@ -1,86 +1,105 @@
 import * as dotenv from "dotenv";
 import { ChatOpenAI } from "@langchain/openai";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { PromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { createLLMAsJudge, CORRECTNESS_PROMPT } from "openevals";
+import { createObjectCsvWriter } from "csv-writer";
+import { dataset } from "./dataset";
 
 dotenv.config();
 
-// 1. Define the Dataset
-// In a real scenario, this might come from a file or LangSmith dataset
-const dataset = [
-  {
-    input: "What is the capital of France?",
-    reference: "The capital of France is Paris.",
-  },
-  {
-    input: "Who wrote 'Romeo and Juliet'?",
-    reference: "William Shakespeare wrote 'Romeo and Juliet'.",
-  },
-  {
-    input: "What is 2 + 2?",
-    reference: "2 + 2 equals 4.",
-  },
-];
-
 async function main() {
-  console.log("Starting evaluation with OpenEvals...");
+  console.log("Starting multi-model evaluation...");
 
-  // 2. Define the Model and Prompt
-  // This is the "System" we are testing
-  const model = new ChatOpenAI({
-    modelName: "gpt-3.5-turbo",
-    temperature: 0,
-  });
+  // 1. Define Models
+  const models = [
+    {
+      name: "gpt-3.5-turbo",
+      llm: new ChatOpenAI({ modelName: "gpt-3.5-turbo", temperature: 0 }),
+    },
+    {
+      name: "gemini-2.5-flash",
+      llm: new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", temperature: 0 }),
+    },
+  ];
 
-  const prompt = PromptTemplate.fromTemplate(`Answer the following question concisely: {input}`);
-  const chain = prompt.pipe(model).pipe(new StringOutputParser());
-
-  // 3. Initialize Evaluators
-  // Using OpenEvals createLLMAsJudge
+  // 2. Initialize Evaluator
+  // We use a strong model (GPT-4) as the judge for all outputs
   const correctnessEvaluator = createLLMAsJudge({
     prompt: CORRECTNESS_PROMPT,
     feedbackKey: "correctness",
-    model: "gpt-4", // Use a strong model for evaluation
+    model: "gpt-4",
   });
 
-  // 4. Run Evaluation
   const results = [];
 
-  for (const item of dataset) {
-    console.log(`Evaluating input: ${item.input}`);
+  // 3. Run Evaluation Loop
+  for (const modelConfig of models) {
+    console.log(`\nTesting Model: ${modelConfig.name}`);
 
-    // Generate prediction
-    const prediction = await chain.invoke({ input: item.input });
-    console.log(`Prediction: ${prediction}`);
+    const prompt = PromptTemplate.fromTemplate(`Answer the following question concisely: {input}`);
+    const chain = prompt.pipe(modelConfig.llm).pipe(new StringOutputParser());
 
-    // Evaluate
-    // OpenEvals expects { inputs, outputs, referenceOutputs }
-    // Note: The prompt expects {inputs}, {outputs}, {reference_outputs} (snake_case in prompt, but passed as camelCase in JS obj usually mapped)
-    // Let's check the docs example again: 
-    // const evalResult = await correctnessEvaluator({ inputs, outputs, referenceOutputs });
+    for (const item of dataset) {
+      // console.log(`  Input: ${item.input}`);
 
-    const evalResult = await correctnessEvaluator({
-      inputs: item.input,
-      outputs: prediction,
-      referenceOutputs: item.reference,
-    });
+      try {
+        // Generate prediction
+        const prediction = await chain.invoke({ input: item.input });
 
-    console.log(`Evaluation Result:`, evalResult);
+        // Evaluate
+        const evalResult = await correctnessEvaluator({
+          inputs: item.input,
+          outputs: prediction,
+          referenceOutputs: item.reference,
+        });
 
-    results.push({
-      ...item,
-      prediction,
-      evaluation: evalResult,
-    });
+        results.push({
+          model: modelConfig.name,
+          input: item.input,
+          prediction: prediction,
+          reference: item.reference,
+          score: evalResult.score,
+          comment: evalResult.comment,
+        });
+      } catch (error) {
+        console.error(`  Error evaluating ${item.input} with ${modelConfig.name}:`, error);
+        results.push({
+          model: modelConfig.name,
+          input: item.input,
+          prediction: "ERROR",
+          reference: item.reference,
+          score: 0,
+          comment: String(error),
+        });
+      }
+    }
   }
 
-  // 5. Summary
-  console.log("\n--- Evaluation Summary ---");
-  // OpenEvals returns { key, score, comment, ... }
-  // Score is usually boolean or number.
-  const passed = results.filter(r => r.evaluation.score === 1 || r.evaluation.score === true).length;
-  console.log(`Total: ${results.length}, Passed: ${passed}, Failed: ${results.length - passed}`);
+  // 4. Output Results
+  console.log("\n--- Evaluation Results ---");
+  console.table(results.map(r => ({
+    model: r.model,
+    input: r.input.substring(0, 20) + "...",
+    score: r.score
+  })));
+
+  // 5. Write to CSV
+  const csvWriter = createObjectCsvWriter({
+    path: 'results.csv',
+    header: [
+      { id: 'model', title: 'Model' },
+      { id: 'input', title: 'Input' },
+      { id: 'prediction', title: 'Prediction' },
+      { id: 'reference', title: 'Reference' },
+      { id: 'score', title: 'Score' },
+      { id: 'comment', title: 'Comment' },
+    ],
+  });
+
+  await csvWriter.writeRecords(results);
+  console.log("\nResults written to results.csv");
 }
 
 main().catch(console.error);
