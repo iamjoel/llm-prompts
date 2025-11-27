@@ -54,3 +54,5 @@ package-lock.json
 # mise
 mise.toml
 
+.env
+
